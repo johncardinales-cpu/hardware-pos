@@ -1,9 +1,211 @@
+import React, { useEffect, useMemo, useState } from 'react';
 
-import React,{useEffect,useMemo,useState}from'react';
-const API_BASE_URL=import.meta.env.VITE_API_BASE_URL||'https://script.google.com/macros/s/AKfycbwkcGeYJA9TdVgdnSIdG6-0Ov0Ldjt2niuJV5_6_Wmma50hmhJzHvSFRZbHko--PWUh/exec';
-const paymentMethods=['Cash','GCash','Maya','Card','Bank Transfer'];
-const expenseCategories=['Supplies','Delivery','Fuel','Meals','Rent','Utilities','Repair','Salary','Miscellaneous'];
-const demo=[{id:'P-001',sku:'CEM-40KG',name:'Cement 40kg',category:'Construction',cost:210,price:285,stock:50,reorderLevel:15,status:'Active'},{id:'P-002',sku:'PVC-12IN',name:'PVC Pipe 1/2 inch',category:'Plumbing',cost:38,price:65,stock:120,reorderLevel:30,status:'Active'},{id:'P-003',sku:'HAM-16OZ',name:'Hammer 16oz',category:'Hand Tools',cost:145,price:250,stock:24,reorderLevel:8,status:'Active'},{id:'P-004',sku:'TAPE-ELEC',name:'Electrical Tape',category:'Electrical',cost:18,price:35,stock:80,reorderLevel:20,status:'Active'},{id:'P-005',sku:'NAIL-2IN',name:'Common Nails 2 inch / kg',category:'Fasteners',cost:52,price:85,stock:35,reorderLevel:12,status:'Active'}];
-function php(v){return new Intl.NumberFormat('en-PH',{style:'currency',currency:'PHP',maximumFractionDigits:0}).format(Number.isFinite(v)?v:0)}function num(v){return Math.max(Number(v)||0,0)}function round(v){return Math.round((Number(v)+Number.EPSILON)*100)/100}function tax(a,r){return round(num(a)*(num(r)/100))}function line(i){return i.quantity*i.unitPrice}function subtotal(c){return c.reduce((s,i)=>s+line(i),0)}function cost(c){return c.reduce((s,i)=>s+i.quantity*i.unitCost,0)}function addCart(c,p){const e=c.find(i=>i.productId===p.id);return e?c.map(i=>i.productId===p.id?{...i,quantity:i.quantity+1}:i):[...c,{productId:p.id,sku:p.sku,name:p.name,quantity:1,unitPrice:p.price,unitCost:p.cost}]}function qty(c,id,q){return c.map(i=>i.productId===id?{...i,quantity:Math.max(1,Number(q)||1)}:i)}function remove(c,id){return c.filter(i=>i.productId!==id)}function errors(ps,c){return c.map(i=>{const p=ps.find(x=>x.id===i.productId);if(!p)return`${i.name} no longer exists.`;if(p.stock<i.quantity)return`${i.name}: only ${p.stock} in stock.`;return null}).filter(Boolean)}function summarize(sales){const beforeTax=sales.reduce((s,x)=>s+x.beforeTax,0);const c=sales.reduce((s,x)=>s+x.cost,0);const byMethod=paymentMethods.reduce((a,m)=>{a[m]=sales.filter(x=>x.paymentMethod===m).reduce((s,x)=>s+x.total,0);return a},{});return{count:sales.length,gross:sales.reduce((s,x)=>s+x.gross,0),beforeTax,tax:sales.reduce((s,x)=>s+x.tax,0),total:sales.reduce((s,x)=>s+x.total,0),cost:c,grossProfit:beforeTax-c,byMethod}}
-function api(action,payload={}){return new Promise((resolve,reject)=>{const cb=`cb_${Date.now()}_${Math.floor(Math.random()*99999)}`;const url=new URL(API_BASE_URL);url.searchParams.set('action',action);url.searchParams.set('callback',cb);url.searchParams.set('payload',JSON.stringify(payload));const script=document.createElement('script');let done=false;function clean(){delete window[cb];script.remove()}const timer=setTimeout(()=>{if(done)return;done=true;clean();reject(new Error('Request timed out'))},15000);window[cb]=res=>{if(done)return;done=true;clearTimeout(timer);clean();if(!res||!res.ok)return reject(new Error((res&&res.error)||`API failed: ${action}`));resolve(res.data)};script.onerror=()=>{if(done)return;done=true;clearTimeout(timer);clean();reject(new Error('Could not load API response'))};script.src=url.toString();document.body.appendChild(script)})}
-export default function App(){const[products,setProducts]=useState(demo),[cart,setCart]=useState([]),[salesRows,setSalesRows]=useState([]),[tab,setTab]=useState('POS'),[search,setSearch]=useState(''),[cashierName,setCashierName]=useState('Juan'),[sessionOpen,setSessionOpen]=useState(false),[sessionId,setSessionId]=useState(''),[openingCash,setOpeningCash]=useState(2000),[paymentMethod,setPaymentMethod]=useState('Cash'),[cashReceived,setCashReceived]=useState(0),[discount,setDiscount]=useState(0),[taxRate,setTaxRate]=useState(12),[actualCash,setActualCash]=useState(0),[expenseName,setExpenseName]=useState(''),[expenseCategory,setExpenseCategory]=useState('Miscellaneous'),[expenseAmount,setExpenseAmount]=useState(0),[expenses,setExpenses]=useState([]),[backend,setBackend]=useState('Connecting'),[backendMsg,setBackendMsg]=useState('Loading products from Google Sheet...'),[activity,setActivity]=useState(['System ready.']),[lastReceipt,setLastReceipt]=useState(null);const filtered=useMemo(()=>products.filter(p=>`${p.name} ${p.sku} ${p.category}`.toLowerCase().includes(search.toLowerCase())),[products,search]);const sub=subtotal(cart),disc=Math.min(num(discount),sub),beforeTax=sub-disc,saleTax=tax(beforeTax,taxRate),totalDue=round(beforeTax+saleTax),saleCost=cost(cart),change=paymentMethod==='Cash'?Math.max(num(cashReceived)-totalDue,0):0,errs=errors(products,cart),canComplete=sessionOpen&&cart.length>0&&errs.length===0&&(paymentMethod!=='Cash'||num(cashReceived)>=totalDue),sales=summarize(salesRows),low=products.filter(p=>p.stock<=p.reorderLevel),expenseTotal=expenses.reduce((s,e)=>s+e.amount,0),netProfit=sales.grossProfit-expenseTotal,cashSales=sales.byMethod.Cash||0,expectedCash=num(openingCash)+cashSales,diff=num(actualCash)-expectedCash,closingStatus=diff===0?'Balanced':diff<0?'Short':'Over';function log(m){setActivity(a=>[m,...a].slice(0,8))}async function refreshProducts(){try{setBackend('Connecting');const data=await api('getProducts');setProducts(data.length?data:demo);setBackend('Connected');setBackendMsg(`Loaded ${data.length} products from Google Sheet.`);log(`Products refreshed: ${data.length}`)}catch(e){setBackend('Offline Demo Mode');setBackendMsg(e.message);log(`Refresh failed: ${e.message}`)}}useEffect(()=>{refreshProducts()},[]);async function openSession(){try{const r=await api('openCashierSession',{cashierName,openingCash:num(openingCash)});setSessionId(r.sessionId);setSessionOpen(true);log(`Live session opened: ${r.sessionId}`)}catch(e){alert(`Session not saved: ${e.message}`)}}async function completeSale(){if(!canComplete)return;try{const r=await api('createSale',{sessionId,cashierName,paymentMethod,cashReceived:paymentMethod==='Cash'?num(cashReceived):0,taxRate:num(taxRate),discount:disc,items:cart.map(i=>({productId:i.productId,quantity:i.quantity,unitPrice:i.unitPrice,unitCost:i.unitCost}))});const sale={id:r.saleId,items:cart,paymentMethod,gross:sub,discount:disc,beforeTax,tax:saleTax,total:totalDue,cost:saleCost};setSalesRows(x=>[sale,...x]);setLastReceipt(sale);setCart([]);setCashReceived(0);setDiscount(0);log(`Live sale completed: ${r.saleId}`);await refreshProducts()}catch(e){alert(`Sale NOT saved: ${e.message}`);log(`Sale failed: ${e.message}`)}}async function addExpense(){const amount=num(expenseAmount);if(!expenseName.trim()||amount<=0)return;try{const r=await api('addExpense',{expenseName:expenseName.trim(),category:expenseCategory,amount});setExpenses(x=>[{id:r.expenseId,name:expenseName.trim(),category:expenseCategory,amount},...x]);setExpenseName('');setExpenseAmount(0);log(`Live expense saved: ${php(amount)}`)}catch(e){alert(`Expense NOT saved: ${e.message}`)}}const tabs=['POS','Inventory','Daily Closing','Weekly Report','Tests'];return <div className="page"><div className="wrap"><div className="card hero"><div className="grid"><div><span className="pill">Hardware Business MVP</span><h1 className="title">POS, Inventory, Daily Closing, Weekly Report</h1><p className="muted">Live POS connected to Google Sheets.</p><div className="backend"><div><b>Google Sheet Backend: {backend}</b><p className="muted">{backendMsg}</p></div><button className="btn secondary" onClick={refreshProducts}>Refresh Products</button></div><div className="actions"><button className="btn" onClick={openSession} disabled={sessionOpen}>Open Cashier Session</button><button className="btn secondary" onClick={()=>{setSessionOpen(false);log(`Session closed. Expected cash: ${php(expectedCash)}. Status: ${closingStatus}.`)}} disabled={!sessionOpen}>Close Session</button><button className="btn danger" onClick={()=>{setSalesRows([]);setCart([]);setExpenses([]);setLastReceipt(null)}}>Reset Local Sales</button></div></div><div className="dark"><p className="muted">Cashier Session</p><h2>{sessionOpen?'Open':'Closed'}</h2><div className="darkGrid"><div className="darkBox"><small>Cashier</small><b>{cashierName}</b></div><div className="darkBox"><small>Opening Cash</small><b>{php(openingCash)}</b></div><div className="darkBox"><small>Total</small><b>{php(sales.total)}</b></div><div className="darkBox"><small>Low Stock</small><b>{low.length}</b></div></div></div></div></div><div className="stats"><div className="card stat"><h3>Products</h3><b>{products.length}</b></div><div className="card stat"><h3>Transactions</h3><b>{sales.count}</b></div><div className="card stat"><h3>Total Collected</h3><b>{php(sales.total)}</b></div><div className="card stat"><h3>Net Profit</h3><b>{php(netProfit)}</b></div></div><div className="card tabs">{tabs.map(x=><button key={x} className={`tab ${tab===x?'active':''}`} onClick={()=>setTab(x)}>{x}</button>)}</div>{tab==='POS'&&<div className="two"><div className="card section"><h2>Product Search</h2><input className="input" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search product..." />{filtered.map(p=><div className="row" key={p.id}><div><b>{p.name}</b> <span className="badge">{p.sku}</span> {p.stock<=p.reorderLevel&&<span className="badge warn">Low Stock</span>}<p className="muted">{p.category} · Stock: {p.stock} · Price: {php(p.price)}</p></div><button className="btn" onClick={()=>setCart(c=>addCart(c,p))}>Add</button></div>)}</div><div className="card section"><h2>POS Cart</h2><div className="form"><input className="input" value={cashierName} onChange={e=>setCashierName(e.target.value)} /><input className="input" type="number" value={openingCash} onChange={e=>setOpeningCash(Number(e.target.value))}/></div>{cart.length===0&&<p className="muted">Cart is empty.</p>}{cart.map(i=><div className="row" key={i.productId}><div><b>{i.name}</b><p className="muted">{php(i.unitPrice)} each · {php(line(i))}</p><input className="input" style={{maxWidth:90}} type="number" value={i.quantity} onChange={e=>setCart(c=>qty(c,i.productId,e.target.value))}/></div><button className="btn secondary" onClick={()=>setCart(c=>remove(c,i.productId))}>Remove</button></div>)}{errs.map(e=><p className="error" key={e}>{e}</p>)}<div className="form"><select value={paymentMethod} onChange={e=>setPaymentMethod(e.target.value)}>{paymentMethods.map(m=><option key={m}>{m}</option>)}</select><input className="input" type="number" value={discount} onChange={e=>setDiscount(Number(e.target.value))} placeholder="Discount"/><input className="input" type="number" value={taxRate} onChange={e=>setTaxRate(Number(e.target.value))} placeholder="Tax %"/>{paymentMethod==='Cash'&&<input className="input" type="number" value={cashReceived} onChange={e=>setCashReceived(Number(e.target.value))} placeholder="Cash received"/>}</div><div className="summary"><div><span>Subtotal</span><span>{php(sub)}</span></div><div><span>Discount</span><span>-{php(disc)}</span></div><div><span>Sales Before Tax</span><span>{php(beforeTax)}</span></div><div><span>Tax</span><span>{php(saleTax)}</span></div><div className="total"><span>Total Due</span><span>{php(totalDue)}</span></div>{paymentMethod==='Cash'&&<div><span>Change</span><span>{php(change)}</span></div>}</div>{!sessionOpen&&<p className="error">Open cashier session first.</p>}<button className="btn" disabled={!canComplete} onClick={completeSale}>Complete Sale</button>{lastReceipt&&<div className="row"><b>Last Receipt: {lastReceipt.id}</b><span>{php(lastReceipt.total)}</span></div>}</div></div>}{tab==='Inventory'&&<div className="card section"><h2>Product Inventory</h2><table className="table"><thead><tr><th>SKU</th><th>Product</th><th>Category</th><th className="right">Cost</th><th className="right">Price</th><th className="right">Stock</th><th className="right">Status</th></tr></thead><tbody>{products.map(p=><tr key={p.id}><td>{p.sku}</td><td>{p.name}</td><td>{p.category}</td><td className="right">{php(p.cost)}</td><td className="right">{php(p.price)}</td><td className="right"><b>{p.stock}</b></td><td className="right">{p.stock<=p.reorderLevel?<span className="badge warn">Low</span>:<span className="badge ok">OK</span>}</td></tr>)}</tbody></table></div>}{tab==='Daily Closing'&&<div className="two"><div className="card section"><h2>Cashier Closing</h2><div className="form"><input className="input" type="number" value={openingCash} onChange={e=>setOpeningCash(Number(e.target.value))}/><input className="input" type="number" value={actualCash} onChange={e=>setActualCash(Number(e.target.value))}/></div><div className="summary"><div><span>Opening Cash</span><span>{php(openingCash)}</span></div><div><span>Cash Sales</span><span>{php(cashSales)}</span></div><div className="total"><span>Expected Cash</span><span>{php(expectedCash)}</span></div><div><span>Actual Cash</span><span>{php(num(actualCash))}</span></div><div><span>Difference</span><span>{php(diff)}</span></div></div><span className={`badge ${closingStatus==='Balanced'?'ok':'warn'}`}>{closingStatus}</span></div><div className="card section"><h2>Daily Report</h2><p>Total: <b>{php(sales.total)}</b></p><p>Tax: <b>{php(sales.tax)}</b></p><p>Net Profit: <b>{php(netProfit)}</b></p><h3>Expense Input</h3><div className="form"><input className="input" value={expenseName} onChange={e=>setExpenseName(e.target.value)} placeholder="Expense"/><select value={expenseCategory} onChange={e=>setExpenseCategory(e.target.value)}>{expenseCategories.map(c=><option key={c}>{c}</option>)}</select><input className="input" type="number" value={expenseAmount} onChange={e=>setExpenseAmount(Number(e.target.value))} placeholder="Amount"/></div><button className="btn" onClick={addExpense}>Add Expense</button>{expenses.map(e=><div className="row" key={e.id}><b>{e.name}</b><span>{php(e.amount)}</span></div>)}</div></div>}{tab==='Weekly Report'&&<div className="two"><div className="card section"><h2>Weekly Sales Summary</h2><p>Transactions: <b>{sales.count}</b></p><p>Sales Before Tax: <b>{php(sales.beforeTax)}</b></p><p>Tax: <b>{php(sales.tax)}</b></p><p>Net Profit: <b>{php(netProfit)}</b></p></div><div className="card section"><h2>Top Products</h2><p className="muted">This shows after sales are made in the current app session.</p></div></div>}{tab==='Tests'&&<div className="card section"><h2>Tests</h2><span className="badge ok">App loaded</span><p className="muted">Run AAA_RUN_FULL_TEST inside Apps Script for backend tests.</p></div>}<div className="card log"><h2>Activity Log</h2>{activity.map((a,i)=><div className="logItem" key={i}>{a}</div>)}</div></div></div>}
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://script.google.com/macros/s/AKfycbwkcGeYJA9TdVgdnSIdG6-0Ov0Ldjt2niuJV5_6_Wmma50hmhJzHvSFRZbHko--PWUh/exec';
+const paymentMethods = ['Cash', 'GCash', 'Maya', 'Card', 'Bank Transfer'];
+const expenseCategories = ['Supplies', 'Delivery', 'Fuel', 'Meals', 'Rent', 'Utilities', 'Repair', 'Salary', 'Miscellaneous'];
+const demo = [
+  { id: 'P-001', sku: 'CEM-40KG', name: 'Cement 40kg', category: 'Construction', cost: 210, price: 285, stock: 50, reorderLevel: 15, status: 'Active' },
+  { id: 'P-002', sku: 'PVC-12IN', name: 'PVC Pipe 1/2 inch', category: 'Plumbing', cost: 38, price: 65, stock: 120, reorderLevel: 30, status: 'Active' },
+  { id: 'P-003', sku: 'HAM-16OZ', name: 'Hammer 16oz', category: 'Hand Tools', cost: 145, price: 250, stock: 24, reorderLevel: 8, status: 'Active' },
+  { id: 'P-004', sku: 'TAPE-ELEC', name: 'Electrical Tape', category: 'Electrical', cost: 18, price: 35, stock: 80, reorderLevel: 20, status: 'Active' },
+  { id: 'P-005', sku: 'NAIL-2IN', name: 'Common Nails 2 inch / kg', category: 'Fasteners', cost: 52, price: 85, stock: 35, reorderLevel: 12, status: 'Active' }
+];
+
+function php(v) {
+  return new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP', maximumFractionDigits: 0 }).format(Number.isFinite(v) ? v : 0);
+}
+function num(v) { return Math.max(Number(v) || 0, 0); }
+function round(v) { return Math.round((Number(v) + Number.EPSILON) * 100) / 100; }
+function tax(a, r) { return round(num(a) * (num(r) / 100)); }
+function line(i) { return i.quantity * i.unitPrice; }
+function subtotal(c) { return c.reduce((s, i) => s + line(i), 0); }
+function cost(c) { return c.reduce((s, i) => s + i.quantity * i.unitCost, 0); }
+function addCart(c, p) {
+  const existing = c.find((i) => i.productId === p.id);
+  if (existing) return c.map((i) => i.productId === p.id ? { ...i, quantity: i.quantity + 1 } : i);
+  return [...c, { productId: p.id, sku: p.sku, name: p.name, quantity: 1, unitPrice: p.price, unitCost: p.cost }];
+}
+function qty(c, id, q) { return c.map((i) => i.productId === id ? { ...i, quantity: Math.max(1, Number(q) || 1) } : i); }
+function remove(c, id) { return c.filter((i) => i.productId !== id); }
+function errors(ps, c) {
+  return c.map((i) => {
+    const p = ps.find((x) => x.id === i.productId);
+    if (!p) return `${i.name} no longer exists.`;
+    if (p.stock < i.quantity) return `${i.name}: only ${p.stock} in stock.`;
+    return null;
+  }).filter(Boolean);
+}
+function summarize(rows) {
+  const beforeTax = rows.reduce((s, x) => s + x.beforeTax, 0);
+  const totalCost = rows.reduce((s, x) => s + x.cost, 0);
+  const byMethod = paymentMethods.reduce((a, m) => {
+    a[m] = rows.filter((x) => x.paymentMethod === m).reduce((s, x) => s + x.total, 0);
+    return a;
+  }, {});
+  return {
+    count: rows.length,
+    gross: rows.reduce((s, x) => s + x.gross, 0),
+    beforeTax,
+    tax: rows.reduce((s, x) => s + x.tax, 0),
+    total: rows.reduce((s, x) => s + x.total, 0),
+    cost: totalCost,
+    grossProfit: beforeTax - totalCost,
+    byMethod
+  };
+}
+function api(action, payload = {}) {
+  return new Promise((resolve, reject) => {
+    const cb = `cb_${Date.now()}_${Math.floor(Math.random() * 99999)}`;
+    const url = new URL(API_BASE_URL);
+    url.searchParams.set('action', action);
+    url.searchParams.set('callback', cb);
+    url.searchParams.set('payload', JSON.stringify(payload));
+    const script = document.createElement('script');
+    let done = false;
+    function clean() { delete window[cb]; script.remove(); }
+    const timer = setTimeout(() => { if (done) return; done = true; clean(); reject(new Error('Request timed out')); }, 15000);
+    window[cb] = (res) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      clean();
+      if (!res || !res.ok) return reject(new Error((res && res.error) || `API failed: ${action}`));
+      resolve(res.data);
+    };
+    script.onerror = () => { if (done) return; done = true; clearTimeout(timer); clean(); reject(new Error('Could not load API response')); };
+    script.src = url.toString();
+    document.body.appendChild(script);
+  });
+}
+function Field({ label, children, hint }) {
+  return <label className="field"><span>{label}</span>{children}{hint ? <small>{hint}</small> : null}</label>;
+}
+
+export default function App() {
+  const [products, setProducts] = useState(demo);
+  const [cart, setCart] = useState([]);
+  const [salesRows, setSalesRows] = useState([]);
+  const [tab, setTab] = useState('POS');
+  const [search, setSearch] = useState('');
+  const [cashierName, setCashierName] = useState('Juan');
+  const [sessionOpen, setSessionOpen] = useState(false);
+  const [sessionId, setSessionId] = useState('');
+  const [openingCash, setOpeningCash] = useState(2000);
+  const [paymentMethod, setPaymentMethod] = useState('Cash');
+  const [cashReceived, setCashReceived] = useState(0);
+  const [discount, setDiscount] = useState(0);
+  const [taxRate, setTaxRate] = useState(12);
+  const [actualCash, setActualCash] = useState(0);
+  const [expenseName, setExpenseName] = useState('');
+  const [expenseCategory, setExpenseCategory] = useState('Miscellaneous');
+  const [expenseAmount, setExpenseAmount] = useState(0);
+  const [expenses, setExpenses] = useState([]);
+  const [backend, setBackend] = useState('Connecting');
+  const [backendMsg, setBackendMsg] = useState('Loading products from Google Sheet...');
+  const [activity, setActivity] = useState(['System ready.']);
+  const [lastReceipt, setLastReceipt] = useState(null);
+
+  const filtered = useMemo(() => products.filter((p) => `${p.name} ${p.sku} ${p.category}`.toLowerCase().includes(search.toLowerCase())), [products, search]);
+  const sub = subtotal(cart);
+  const disc = Math.min(num(discount), sub);
+  const beforeTax = sub - disc;
+  const saleTax = tax(beforeTax, taxRate);
+  const totalDue = round(beforeTax + saleTax);
+  const saleCost = cost(cart);
+  const change = paymentMethod === 'Cash' ? Math.max(num(cashReceived) - totalDue, 0) : 0;
+  const errs = errors(products, cart);
+  const canComplete = sessionOpen && cart.length > 0 && errs.length === 0 && (paymentMethod !== 'Cash' || num(cashReceived) >= totalDue);
+  const sales = summarize(salesRows);
+  const low = products.filter((p) => p.stock <= p.reorderLevel);
+  const expenseTotal = expenses.reduce((s, e) => s + e.amount, 0);
+  const netProfit = sales.grossProfit - expenseTotal;
+  const cashSales = sales.byMethod.Cash || 0;
+  const expectedCash = num(openingCash) + cashSales;
+  const diff = num(actualCash) - expectedCash;
+  const closingStatus = diff === 0 ? 'Balanced' : diff < 0 ? 'Short' : 'Over';
+
+  function log(m) { setActivity((a) => [m, ...a].slice(0, 8)); }
+  async function refreshProducts() {
+    try {
+      setBackend('Connecting');
+      const data = await api('getProducts');
+      setProducts(data.length ? data : demo);
+      setBackend('Connected');
+      setBackendMsg(`Loaded ${data.length} products from Google Sheet.`);
+      log(`Products refreshed: ${data.length}`);
+    } catch (e) {
+      setBackend('Offline Demo Mode');
+      setBackendMsg(e.message);
+      log(`Refresh failed: ${e.message}`);
+    }
+  }
+  useEffect(() => { refreshProducts(); }, []);
+  async function openSession() {
+    try {
+      const r = await api('openCashierSession', { cashierName, openingCash: num(openingCash) });
+      setSessionId(r.sessionId);
+      setSessionOpen(true);
+      log(`Live session opened: ${r.sessionId}`);
+    } catch (e) {
+      alert(`Session not saved: ${e.message}`);
+    }
+  }
+  async function completeSale() {
+    if (!canComplete) return;
+    const cashTendered = paymentMethod === 'Cash' ? num(cashReceived) : 0;
+    try {
+      const r = await api('createSale', {
+        sessionId,
+        cashierName,
+        paymentMethod,
+        cashReceived: cashTendered,
+        taxRate: num(taxRate),
+        discount: disc,
+        items: cart.map((i) => ({ productId: i.productId, quantity: i.quantity, unitPrice: i.unitPrice, unitCost: i.unitCost }))
+      });
+      const sale = { id: r.saleId, items: cart, paymentMethod, gross: sub, discount: disc, beforeTax, tax: saleTax, total: totalDue, cost: saleCost, cashReceived: cashTendered, changeDue: change };
+      setSalesRows((x) => [sale, ...x]);
+      setLastReceipt(sale);
+      setCart([]);
+      setCashReceived(0);
+      setDiscount(0);
+      log(`Live sale completed: ${r.saleId}. Change: ${php(change)}.`);
+      await refreshProducts();
+    } catch (e) {
+      alert(`Sale NOT saved: ${e.message}`);
+      log(`Sale failed: ${e.message}`);
+    }
+  }
+  async function addExpense() {
+    const amount = num(expenseAmount);
+    if (!expenseName.trim() || amount <= 0) return;
+    try {
+      const r = await api('addExpense', { expenseName: expenseName.trim(), category: expenseCategory, amount });
+      setExpenses((x) => [{ id: r.expenseId, name: expenseName.trim(), category: expenseCategory, amount }, ...x]);
+      setExpenseName('');
+      setExpenseAmount(0);
+      log(`Live expense saved: ${php(amount)}`);
+    } catch (e) {
+      alert(`Expense NOT saved: ${e.message}`);
+    }
+  }
+  const tabs = ['POS', 'Inventory', 'Daily Closing', 'Weekly Report', 'Tests'];
+
+  return <div className="page"><div className="wrap">
+    <div className="card hero"><div className="grid"><div><span className="pill">Hardware Business MVP</span><h1 className="title">POS, Inventory, Daily Closing, Weekly Report</h1><p className="muted">Live POS connected to Google Sheets.</p><div className="backend"><div><b>Google Sheet Backend: {backend}</b><p className="muted">{backendMsg}</p></div><button className="btn secondary" onClick={refreshProducts}>Refresh Products</button></div><div className="actions"><button className="btn" onClick={openSession} disabled={sessionOpen}>Open Cashier Session</button><button className="btn secondary" onClick={() => { setSessionOpen(false); log(`Session closed. Expected cash: ${php(expectedCash)}. Status: ${closingStatus}.`); }} disabled={!sessionOpen}>Close Session</button><button className="btn danger" onClick={() => { setSalesRows([]); setCart([]); setExpenses([]); setLastReceipt(null); }}>Reset Local Sales</button></div></div><div className="dark"><p className="muted">Cashier Session</p><h2>{sessionOpen ? 'Open' : 'Closed'}</h2><div className="darkGrid"><div className="darkBox"><small>Cashier</small><b>{cashierName}</b></div><div className="darkBox"><small>Opening Cash</small><b>{php(openingCash)}</b></div><div className="darkBox"><small>Total</small><b>{php(sales.total)}</b></div><div className="darkBox"><small>Low Stock</small><b>{low.length}</b></div></div></div></div></div>
+
+    <div className="stats"><div className="card stat"><h3>Products</h3><b>{products.length}</b></div><div className="card stat"><h3>Transactions</h3><b>{sales.count}</b></div><div className="card stat"><h3>Total Collected</h3><b>{php(sales.total)}</b></div><div className="card stat"><h3>Net Profit</h3><b>{php(netProfit)}</b></div></div>
+    <div className="card tabs">{tabs.map((x) => <button key={x} className={`tab ${tab === x ? 'active' : ''}`} onClick={() => setTab(x)}>{x}</button>)}</div>
+
+    {tab === 'POS' && <div className="two"><div className="card section"><h2>Product Search</h2><input className="input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search product..." />{filtered.map((p) => <div className="row" key={p.id}><div><b>{p.name}</b> <span className="badge">{p.sku}</span> {p.stock <= p.reorderLevel && <span className="badge warn">Low Stock</span>}<p className="muted">{p.category} · Stock: {p.stock} · Price: {php(p.price)}</p></div><button className="btn" onClick={() => setCart((c) => addCart(c, p))}>Add</button></div>)}</div>
+      <div className="card section"><h2>POS Cart</h2><div className="form"><Field label="Cashier Name"><input className="input" value={cashierName} onChange={(e) => setCashierName(e.target.value)} /></Field><Field label="Opening Cash Float"><input className="input" type="number" value={openingCash} onChange={(e) => setOpeningCash(Number(e.target.value))} /></Field></div>{cart.length === 0 && <p className="muted">Cart is empty.</p>}{cart.map((i) => <div className="row" key={i.productId}><div><b>{i.name}</b><p className="muted">{php(i.unitPrice)} each · {php(line(i))}</p><Field label="Quantity"><input className="input" style={{ maxWidth: 90 }} type="number" value={i.quantity} onChange={(e) => setCart((c) => qty(c, i.productId, e.target.value))} /></Field></div><button className="btn secondary" onClick={() => setCart((c) => remove(c, i.productId))}>Remove</button></div>)}{errs.map((e) => <p className="error" key={e}>{e}</p>)}
+        <div className="form paymentForm"><Field label="Payment Method"><select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>{paymentMethods.map((m) => <option key={m}>{m}</option>)}</select></Field>{paymentMethod === 'Cash' && <Field label="Cash Received" hint="Enter money given by customer. Change is calculated automatically."><input className="input" type="number" value={cashReceived} onChange={(e) => setCashReceived(Number(e.target.value))} placeholder="Example: 500" /></Field>}<Field label="Tax Rate %"><input className="input" type="number" value={taxRate} onChange={(e) => setTaxRate(Number(e.target.value))} placeholder="Example: 12" /></Field><Field label="Discount"><input className="input" type="number" value={discount} onChange={(e) => setDiscount(Number(e.target.value))} placeholder="Example: 0" /></Field></div>
+        <div className="summary"><div><span>Subtotal</span><span>{php(sub)}</span></div><div><span>Discount</span><span>-{php(disc)}</span></div><div><span>Sales Before Tax</span><span>{php(beforeTax)}</span></div><div><span>Tax</span><span>{php(saleTax)}</span></div><div className="total"><span>Total Due</span><span>{php(totalDue)}</span></div>{paymentMethod === 'Cash' && <><div><span>Cash Received</span><span>{php(num(cashReceived))}</span></div><div className="change"><span>Auto Change</span><span>{php(change)}</span></div></>}</div>{!sessionOpen && <p className="error">Open cashier session first.</p>}{paymentMethod === 'Cash' && sessionOpen && cart.length > 0 && num(cashReceived) < totalDue && <p className="error">Cash received must be at least {php(totalDue)}.</p>}<button className="btn" disabled={!canComplete} onClick={completeSale}>Complete Sale</button>{lastReceipt && <div className="row"><b>Last Receipt: {lastReceipt.id}</b><span>Total {php(lastReceipt.total)} · Change {php(lastReceipt.changeDue || 0)}</span></div>}</div></div>}
+
+    {tab === 'Inventory' && <div className="card section"><h2>Product Inventory</h2><table className="table"><thead><tr><th>SKU</th><th>Product</th><th>Category</th><th className="right">Cost</th><th className="right">Price</th><th className="right">Stock</th><th className="right">Status</th></tr></thead><tbody>{products.map((p) => <tr key={p.id}><td>{p.sku}</td><td>{p.name}</td><td>{p.category}</td><td className="right">{php(p.cost)}</td><td className="right">{php(p.price)}</td><td className="right"><b>{p.stock}</b></td><td className="right">{p.stock <= p.reorderLevel ? <span className="badge warn">Low</span> : <span className="badge ok">OK</span>}</td></tr>)}</tbody></table></div>}
+    {tab === 'Daily Closing' && <div className="two"><div className="card section"><h2>Cashier Closing</h2><div className="form"><Field label="Opening Cash Float"><input className="input" type="number" value={openingCash} onChange={(e) => setOpeningCash(Number(e.target.value))} /></Field><Field label="Actual Cash Count"><input className="input" type="number" value={actualCash} onChange={(e) => setActualCash(Number(e.target.value))} /></Field></div><div className="summary"><div><span>Opening Cash</span><span>{php(openingCash)}</span></div><div><span>Cash Sales</span><span>{php(cashSales)}</span></div><div className="total"><span>Expected Cash</span><span>{php(expectedCash)}</span></div><div><span>Actual Cash</span><span>{php(num(actualCash))}</span></div><div><span>Difference</span><span>{php(diff)}</span></div></div><span className={`badge ${closingStatus === 'Balanced' ? 'ok' : 'warn'}`}>{closingStatus}</span></div><div className="card section"><h2>Daily Report</h2><p>Total: <b>{php(sales.total)}</b></p><p>Tax: <b>{php(sales.tax)}</b></p><p>Net Profit: <b>{php(netProfit)}</b></p><h3>Expense Input</h3><div className="form"><Field label="Expense Name"><input className="input" value={expenseName} onChange={(e) => setExpenseName(e.target.value)} placeholder="Expense" /></Field><Field label="Category"><select value={expenseCategory} onChange={(e) => setExpenseCategory(e.target.value)}>{expenseCategories.map((c) => <option key={c}>{c}</option>)}</select></Field><Field label="Amount"><input className="input" type="number" value={expenseAmount} onChange={(e) => setExpenseAmount(Number(e.target.value))} placeholder="Amount" /></Field></div><button className="btn" onClick={addExpense}>Add Expense</button>{expenses.map((e) => <div className="row" key={e.id}><b>{e.name}</b><span>{php(e.amount)}</span></div>)}</div></div>}
+    {tab === 'Weekly Report' && <div className="two"><div className="card section"><h2>Weekly Sales Summary</h2><p>Transactions: <b>{sales.count}</b></p><p>Sales Before Tax: <b>{php(sales.beforeTax)}</b></p><p>Tax: <b>{php(sales.tax)}</b></p><p>Net Profit: <b>{php(netProfit)}</b></p></div><div className="card section"><h2>Top Products</h2><p className="muted">This shows after sales are made in the current app session.</p></div></div>}
+    {tab === 'Tests' && <div className="card section"><h2>Tests</h2><span className="badge ok">App loaded</span><p className="muted">Run AAA_RUN_FULL_TEST inside Apps Script for backend tests.</p></div>}
+    <div className="card log"><h2>Activity Log</h2>{activity.map((a, i) => <div className="logItem" key={i}>{a}</div>)}</div>
+  </div></div>;
+}
