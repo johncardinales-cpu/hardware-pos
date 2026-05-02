@@ -3,6 +3,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://script.google.com/macros/s/AKfycbwkcGeYJA9TdVgdnSIdG6-0Ov0Ldjt2niuJV5_6_Wmma50hmhJzHvSFRZbHko--PWUh/exec';
 const paymentMethods = ['Cash', 'GCash', 'Maya', 'Card', 'Bank Transfer'];
 const expenseCategories = ['Supplies', 'Delivery', 'Fuel', 'Meals', 'Rent', 'Utilities', 'Repair', 'Salary', 'Miscellaneous'];
+const returnReasons = ['Wrong Item', 'Defective', 'Damaged', 'Customer Exchange'];
+const returnActions = ['Replace Same Item', 'Exchange Different Item', 'Refund', 'Store Credit'];
+const returnConditions = ['Sellable', 'Damaged', 'Defective', 'For Supplier Return'];
+const restockActions = ['Return to Sellable Stock', 'Move to Damaged Inventory', 'Supplier Return'];
 const demo = [{ id: 'P-001', sku: 'CEM-40KG', name: 'Cement 40kg', category: 'Construction', cost: 210, price: 285, stock: 50, reorderLevel: 15, status: 'Active' }];
 
 function php(v) { return new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number.isFinite(v) ? v : 0); }
@@ -16,35 +20,15 @@ function addCart(c, p) { const e = c.find((i) => i.productId === p.id); return e
 function qty(c, id, q) { return c.map((i) => i.productId === id ? { ...i, quantity: Math.max(1, Number(q) || 1) } : i); }
 function remove(c, id) { return c.filter((i) => i.productId !== id); }
 function errors(ps, c) { return c.map((i) => { const p = ps.find((x) => x.id === i.productId); if (!p) return `${i.name} no longer exists.`; if (p.stock < i.quantity) return `${i.name}: only ${p.stock} in stock.`; return null; }).filter(Boolean); }
-function summarize(rows) {
-  const beforeTax = rows.reduce((s, x) => s + x.beforeTax, 0);
-  const totalCost = rows.reduce((s, x) => s + x.cost, 0);
-  const byMethod = paymentMethods.reduce((a, m) => { a[m] = rows.filter((x) => x.paymentMethod === m).reduce((s, x) => s + x.total, 0); return a; }, {});
-  return { count: rows.length, gross: rows.reduce((s, x) => s + x.gross, 0), beforeTax, tax: rows.reduce((s, x) => s + x.tax, 0), total: rows.reduce((s, x) => s + x.total, 0), cost: totalCost, grossProfit: beforeTax - totalCost, byMethod };
-}
-function api(action, payload = {}) {
-  return new Promise((resolve, reject) => {
-    const cb = `cb_${Date.now()}_${Math.floor(Math.random() * 99999)}`;
-    const url = new URL(API_BASE_URL);
-    url.searchParams.set('action', action);
-    url.searchParams.set('callback', cb);
-    url.searchParams.set('payload', JSON.stringify(payload));
-    const script = document.createElement('script');
-    let done = false;
-    function clean() { delete window[cb]; script.remove(); }
-    const timer = setTimeout(() => { if (done) return; done = true; clean(); reject(new Error('Request timed out')); }, 15000);
-    window[cb] = (res) => { if (done) return; done = true; clearTimeout(timer); clean(); if (!res || !res.ok) return reject(new Error((res && res.error) || `API failed: ${action}`)); resolve(res.data); };
-    script.onerror = () => { if (done) return; done = true; clearTimeout(timer); clean(); reject(new Error('Could not load API response')); };
-    script.src = url.toString();
-    document.body.appendChild(script);
-  });
-}
+function summarize(rows) { const beforeTax = rows.reduce((s, x) => s + x.beforeTax, 0); const totalCost = rows.reduce((s, x) => s + x.cost, 0); const byMethod = paymentMethods.reduce((a, m) => { a[m] = rows.filter((x) => x.paymentMethod === m).reduce((s, x) => s + x.total, 0); return a; }, {}); return { count: rows.length, gross: rows.reduce((s, x) => s + x.gross, 0), beforeTax, tax: rows.reduce((s, x) => s + x.tax, 0), total: rows.reduce((s, x) => s + x.total, 0), cost: totalCost, grossProfit: beforeTax - totalCost, byMethod }; }
+function api(action, payload = {}) { return new Promise((resolve, reject) => { const cb = `cb_${Date.now()}_${Math.floor(Math.random() * 99999)}`; const url = new URL(API_BASE_URL); url.searchParams.set('action', action); url.searchParams.set('callback', cb); url.searchParams.set('payload', JSON.stringify(payload)); const script = document.createElement('script'); let done = false; function clean() { delete window[cb]; script.remove(); } const timer = setTimeout(() => { if (done) return; done = true; clean(); reject(new Error('Request timed out')); }, 15000); window[cb] = (res) => { if (done) return; done = true; clearTimeout(timer); clean(); if (!res || !res.ok) return reject(new Error((res && res.error) || `API failed: ${action}`)); resolve(res.data); }; script.onerror = () => { if (done) return; done = true; clearTimeout(timer); clean(); reject(new Error('Could not load API response')); }; script.src = url.toString(); document.body.appendChild(script); }); }
 function Field({ label, children, hint }) { return <label className="field"><span>{label}</span>{children}{hint ? <small>{hint}</small> : null}</label>; }
 
 export default function App() {
   const [products, setProducts] = useState(demo);
   const [cart, setCart] = useState([]);
   const [salesRows, setSalesRows] = useState([]);
+  const [returnRows, setReturnRows] = useState([]);
   const [tab, setTab] = useState('POS');
   const [search, setSearch] = useState('');
   const [cashierName, setCashierName] = useState('Juan');
@@ -65,75 +49,28 @@ export default function App() {
   const [backendMsg, setBackendMsg] = useState('Loading products from Google Sheet...');
   const [activity, setActivity] = useState(['System ready.']);
   const [lastReceipt, setLastReceipt] = useState(null);
+  const [returnForm, setReturnForm] = useState({ originalSaleId: '', customerName: '', reason: 'Wrong Item', action: 'Replace Same Item', returnedProductId: 'P-001', returnedQty: 1, returnedCondition: 'Damaged', replacementProductId: 'P-001', replacementQty: 1, restockAction: 'Move to Damaged Inventory', refundMethod: 'Cash', refundAmount: 0, storeCreditAmount: 0, notes: '' });
 
   const filtered = useMemo(() => products.filter((p) => `${p.name} ${p.sku} ${p.category}`.toLowerCase().includes(search.toLowerCase())), [products, search]);
-  const sub = subtotal(cart);
-  const disc = Math.min(num(discount), sub);
-  const beforeTax = sub - disc;
-  const saleTax = tax(beforeTax, taxRate);
-  const totalDue = round(beforeTax + saleTax);
-  const saleCost = cost(cart);
-  const change = paymentMethod === 'Cash' ? Math.max(num(cashReceived) - totalDue, 0) : 0;
-  const errs = errors(products, cart);
-  const canComplete = sessionOpen && cart.length > 0 && errs.length === 0 && (paymentMethod !== 'Cash' || num(cashReceived) >= totalDue);
-  const sales = summarize(salesRows);
-  const low = products.filter((p) => p.stock <= p.reorderLevel);
-  const expenseTotal = expenses.reduce((s, e) => s + e.amount, 0);
-  const netProfit = sales.grossProfit - expenseTotal;
-  const cashSales = sales.byMethod.Cash || 0;
-  const expectedCash = round(num(openingCash) + cashSales);
-  const actualCash = manualActualCash === '' ? expectedCash : num(manualActualCash);
-  const diff = round(actualCash - expectedCash);
-  const closingStatus = diff === 0 ? 'Balanced' : diff < 0 ? 'Short' : 'Over';
+  const sub = subtotal(cart), disc = Math.min(num(discount), sub), beforeTax = sub - disc, saleTax = tax(beforeTax, taxRate), totalDue = round(beforeTax + saleTax), saleCost = cost(cart), change = paymentMethod === 'Cash' ? Math.max(num(cashReceived) - totalDue, 0) : 0;
+  const errs = errors(products, cart), canComplete = sessionOpen && cart.length > 0 && errs.length === 0 && (paymentMethod !== 'Cash' || num(cashReceived) >= totalDue);
+  const sales = summarize(salesRows), low = products.filter((p) => p.stock <= p.reorderLevel), expenseTotal = expenses.reduce((s, e) => s + e.amount, 0), netProfit = sales.grossProfit - expenseTotal;
+  const cashSales = sales.byMethod.Cash || 0, expectedCash = round(num(openingCash) + cashSales), actualCash = manualActualCash === '' ? expectedCash : num(manualActualCash), diff = round(actualCash - expectedCash), closingStatus = diff === 0 ? 'Balanced' : diff < 0 ? 'Short' : 'Over';
+  const returnedProduct = products.find((p) => p.id === returnForm.returnedProductId) || products[0] || demo[0];
+  const replacementProduct = products.find((p) => p.id === returnForm.replacementProductId) || returnedProduct;
+  const returnSubtotal = round((num(returnForm.replacementQty) * num(replacementProduct?.price)) - (num(returnForm.returnedQty) * num(returnedProduct?.price)));
+  const suggestedRefund = returnForm.action === 'Refund' ? round(num(returnForm.returnedQty) * num(returnedProduct?.price)) : 0;
 
+  function setReturnField(name, value) { setReturnForm((f) => ({ ...f, [name]: value })); }
   function log(m) { setActivity((a) => [m, ...a].slice(0, 8)); }
-  async function refreshProducts() {
-    try {
-      setBackend('Connecting');
-      const data = await api('getProducts');
-      setProducts(data.length ? data : demo);
-      setBackend('Connected');
-      setBackendMsg(`Loaded ${data.length} products from Google Sheet.`);
-      log(`Products refreshed: ${data.length}`);
-    } catch (e) { setBackend('Offline Demo Mode'); setBackendMsg(e.message); log(`Refresh failed: ${e.message}`); }
-  }
+  async function refreshProducts() { try { setBackend('Connecting'); const data = await api('getProducts'); setProducts(data.length ? data : demo); if (!returnForm.returnedProductId && data[0]) setReturnField('returnedProductId', data[0].id); setBackend('Connected'); setBackendMsg(`Loaded ${data.length} products from Google Sheet.`); log(`Products refreshed: ${data.length}`); } catch (e) { setBackend('Offline Demo Mode'); setBackendMsg(e.message); log(`Refresh failed: ${e.message}`); } }
   useEffect(() => { refreshProducts(); }, []);
-  async function openSession() {
-    try {
-      const r = await api('openCashierSession', { cashierName, openingCash: num(openingCash) });
-      setSessionId(r.sessionId); setSessionOpen(true); setClosingResult(null); setManualActualCash('');
-      log(`Live session opened: ${r.sessionId}`);
-    } catch (e) { alert(`Session not saved: ${e.message}`); }
-  }
-  async function saveDailyClosing() {
-    if (!sessionId) { alert('Open a cashier session first.'); return; }
-    try {
-      const r = await api('closeCashierSession', { sessionId, actualCash, notes: 'Closed from POS daily closing screen' });
-      setClosingResult(r); setSessionOpen(false);
-      log(`Daily closing saved: ${r.status}. Actual cash: ${php(r.actualCash)}. Difference: ${php(r.cashDifference)}.`);
-    } catch (e) { alert(`Daily closing NOT saved: ${e.message}`); log(`Daily closing failed: ${e.message}`); }
-  }
-  async function completeSale() {
-    if (!canComplete) return;
-    const cashTendered = paymentMethod === 'Cash' ? num(cashReceived) : 0;
-    try {
-      const r = await api('createSale', { sessionId, cashierName, paymentMethod, cashReceived: cashTendered, taxRate: num(taxRate), discount: disc, items: cart.map((i) => ({ productId: i.productId, quantity: i.quantity, unitPrice: i.unitPrice, unitCost: i.unitCost })) });
-      const sale = { id: r.saleId, time: new Date().toLocaleTimeString(), items: cart, paymentMethod, gross: sub, discount: disc, beforeTax, tax: saleTax, total: totalDue, cost: saleCost, grossProfit: beforeTax - saleCost, cashReceived: cashTendered, changeDue: change };
-      setSalesRows((x) => [sale, ...x]); setLastReceipt(sale); setCart([]); setCashReceived(0); setDiscount(0); setManualActualCash('');
-      log(`Live sale completed: ${r.saleId}. Change: ${php(change)}.`);
-      await refreshProducts();
-    } catch (e) { alert(`Sale NOT saved: ${e.message}`); log(`Sale failed: ${e.message}`); }
-  }
-  async function addExpense() {
-    const amount = num(expenseAmount);
-    if (!expenseName.trim() || amount <= 0) return;
-    try {
-      const r = await api('addExpense', { expenseName: expenseName.trim(), category: expenseCategory, amount });
-      setExpenses((x) => [{ id: r.expenseId, name: expenseName.trim(), category: expenseCategory, amount }, ...x]);
-      setExpenseName(''); setExpenseAmount(0); log(`Live expense saved: ${php(amount)}`);
-    } catch (e) { alert(`Expense NOT saved: ${e.message}`); }
-  }
-  const tabs = ['POS', 'Inventory', 'Daily Closing', 'Weekly Report', 'Tests'];
+  async function openSession() { try { const r = await api('openCashierSession', { cashierName, openingCash: num(openingCash) }); setSessionId(r.sessionId); setSessionOpen(true); setClosingResult(null); setManualActualCash(''); log(`Live session opened: ${r.sessionId}`); } catch (e) { alert(`Session not saved: ${e.message}`); } }
+  async function saveDailyClosing() { if (!sessionId) { alert('Open a cashier session first.'); return; } try { const r = await api('closeCashierSession', { sessionId, actualCash, notes: 'Closed from POS daily closing screen' }); setClosingResult(r); setSessionOpen(false); log(`Daily closing saved: ${r.status}. Actual cash: ${php(r.actualCash)}. Difference: ${php(r.cashDifference)}.`); } catch (e) { alert(`Daily closing NOT saved: ${e.message}`); log(`Daily closing failed: ${e.message}`); } }
+  async function completeSale() { if (!canComplete) return; const cashTendered = paymentMethod === 'Cash' ? num(cashReceived) : 0; try { const r = await api('createSale', { sessionId, cashierName, paymentMethod, cashReceived: cashTendered, taxRate: num(taxRate), discount: disc, items: cart.map((i) => ({ productId: i.productId, quantity: i.quantity, unitPrice: i.unitPrice, unitCost: i.unitCost })) }); const sale = { id: r.saleId, time: new Date().toLocaleTimeString(), items: cart, paymentMethod, gross: sub, discount: disc, beforeTax, tax: saleTax, total: totalDue, cost: saleCost, grossProfit: beforeTax - saleCost, cashReceived: cashTendered, changeDue: change }; setSalesRows((x) => [sale, ...x]); setLastReceipt(sale); setCart([]); setCashReceived(0); setDiscount(0); setManualActualCash(''); log(`Live sale completed: ${r.saleId}. Change: ${php(change)}.`); await refreshProducts(); } catch (e) { alert(`Sale NOT saved: ${e.message}`); log(`Sale failed: ${e.message}`); } }
+  async function addExpense() { const amount = num(expenseAmount); if (!expenseName.trim() || amount <= 0) return; try { const r = await api('addExpense', { expenseName: expenseName.trim(), category: expenseCategory, amount }); setExpenses((x) => [{ id: r.expenseId, name: expenseName.trim(), category: expenseCategory, amount }, ...x]); setExpenseName(''); setExpenseAmount(0); log(`Live expense saved: ${php(amount)}`); } catch (e) { alert(`Expense NOT saved: ${e.message}`); } }
+  async function recordReturn() { if (!returnForm.originalSaleId.trim()) { alert('Enter the original Sale ID / Receipt ID.'); return; } try { const payload = { ...returnForm, cashierName, returnedQty: num(returnForm.returnedQty), replacementQty: num(returnForm.replacementQty), refundAmount: returnForm.action === 'Refund' ? num(returnForm.refundAmount || suggestedRefund) : 0, storeCreditAmount: returnForm.action === 'Store Credit' ? num(returnForm.storeCreditAmount || suggestedRefund) : 0 }; const r = await api('recordReturn', payload); setReturnRows((rows) => [{ ...payload, returnId: r.returnId, returnedProductName: returnedProduct.name, replacementProductName: replacementProduct.name, priceDifference: r.priceDifference, costImpact: r.costImpact }, ...rows]); log(`Return saved: ${r.returnId}. ${payload.action}.`); await refreshProducts(); } catch (e) { alert(`Return NOT saved: ${e.message}. Make sure PATCH_returns_module.gs is pasted and redeployed in Apps Script.`); log(`Return failed: ${e.message}`); } }
+  const tabs = ['POS', 'Inventory', 'Daily Closing', 'Returns', 'Weekly Report', 'Tests'];
 
   return <div className="page"><div className="wrap">
     <div className="card hero"><div className="grid"><div><span className="pill">Hardware Business MVP</span><h1 className="title">POS, Inventory, Daily Closing, Weekly Report</h1><p className="muted">Live POS connected to Google Sheets.</p><div className="backend"><div><b>Google Sheet Backend: {backend}</b><p className="muted">{backendMsg}</p></div><button className="btn secondary" onClick={refreshProducts}>Refresh Products</button></div><div className="actions"><button className="btn" onClick={openSession} disabled={sessionOpen}>Open Cashier Session</button><button className="btn secondary" onClick={() => setTab('Daily Closing')} disabled={!sessionOpen && !sessionId}>Go to Daily Closing</button><button className="btn danger" onClick={() => { setSalesRows([]); setCart([]); setExpenses([]); setLastReceipt(null); setClosingResult(null); setManualActualCash(''); }}>Reset Local Sales</button></div></div><div className="dark"><p className="muted">Cashier Session</p><h2>{sessionOpen ? 'Open' : 'Closed'}</h2><div className="darkGrid"><div className="darkBox"><small>Cashier</small><b>{cashierName}</b></div><div className="darkBox"><small>Opening Cash</small><b>{php(openingCash)}</b></div><div className="darkBox"><small>Total</small><b>{php(sales.total)}</b></div><div className="darkBox"><small>Low Stock</small><b>{low.length}</b></div></div></div></div></div>
@@ -142,6 +79,7 @@ export default function App() {
     {tab === 'POS' && <div className="two"><div className="card section"><h2>Product Search</h2><input className="input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search product..." />{filtered.map((p) => <div className="row" key={p.id}><div><b>{p.name}</b> <span className="badge">{p.sku}</span> {p.stock <= p.reorderLevel && <span className="badge warn">Low Stock</span>}<p className="muted">{p.category} · Stock: {p.stock} · Price: {php(p.price)}</p></div><button className="btn" onClick={() => setCart((c) => addCart(c, p))}>Add</button></div>)}</div><div className="card section"><h2>POS Cart</h2><div className="form"><Field label="Cashier Name"><input className="input" value={cashierName} onChange={(e) => setCashierName(e.target.value)} /></Field><Field label="Opening Cash Float"><input className="input" type="number" value={openingCash} onChange={(e) => setOpeningCash(Number(e.target.value))} /></Field></div>{cart.length === 0 && <p className="muted">Cart is empty.</p>}{cart.map((i) => <div className="row" key={i.productId}><div><b>{i.name}</b><p className="muted">{php(i.unitPrice)} each · {php(line(i))}</p><Field label="Quantity"><input className="input" style={{ maxWidth: 90 }} type="number" value={i.quantity} onChange={(e) => setCart((c) => qty(c, i.productId, e.target.value))} /></Field></div><button className="btn secondary" onClick={() => setCart((c) => remove(c, i.productId))}>Remove</button></div>)}{errs.map((e) => <p className="error" key={e}>{e}</p>)}<div className="form paymentForm"><Field label="Payment Method"><select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>{paymentMethods.map((m) => <option key={m}>{m}</option>)}</select></Field>{paymentMethod === 'Cash' && <Field label="Cash Received" hint="Enter money given by customer. Change is calculated automatically."><input className="input" type="number" value={cashReceived} onChange={(e) => setCashReceived(Number(e.target.value))} placeholder="Example: 500" /></Field>}<Field label="Tax Rate %"><input className="input" type="number" value={taxRate} onChange={(e) => setTaxRate(Number(e.target.value))} /></Field><Field label="Discount"><input className="input" type="number" value={discount} onChange={(e) => setDiscount(Number(e.target.value))} /></Field></div><div className="summary"><div><span>Subtotal</span><span>{php(sub)}</span></div><div><span>Discount</span><span>-{php(disc)}</span></div><div><span>Sales Before Tax</span><span>{php(beforeTax)}</span></div><div><span>Tax</span><span>{php(saleTax)}</span></div><div className="total"><span>Total Due</span><span>{php(totalDue)}</span></div>{paymentMethod === 'Cash' && <><div><span>Cash Received</span><span>{php(num(cashReceived))}</span></div><div className="change"><span>Auto Change</span><span>{php(change)}</span></div></>}</div>{!sessionOpen && <p className="error">Open cashier session first.</p>}{paymentMethod === 'Cash' && sessionOpen && cart.length > 0 && num(cashReceived) < totalDue && <p className="error">Cash received must be at least {php(totalDue)}.</p>}<button className="btn" disabled={!canComplete} onClick={completeSale}>Complete Sale</button>{lastReceipt && <div className="row"><b>Last Receipt: {lastReceipt.id}</b><span>Total {php(lastReceipt.total)} · Change {php(lastReceipt.changeDue || 0)}</span></div>}</div></div>}
     {tab === 'Inventory' && <div className="card section"><h2>Product Inventory</h2><table className="table"><thead><tr><th>SKU</th><th>Product</th><th>Category</th><th className="right">Cost</th><th className="right">Price</th><th className="right">Stock</th><th className="right">Status</th></tr></thead><tbody>{products.map((p) => <tr key={p.id}><td>{p.sku}</td><td>{p.name}</td><td>{p.category}</td><td className="right">{php(p.cost)}</td><td className="right">{php(p.price)}</td><td className="right"><b>{p.stock}</b></td><td className="right">{p.stock <= p.reorderLevel ? <span className="badge warn">Low</span> : <span className="badge ok">OK</span>}</td></tr>)}</tbody></table></div>}
     {tab === 'Daily Closing' && <div className="two"><div className="card section"><h2>Cashier Closing</h2><p className="muted">Actual Cash Count is auto-filled with Expected Cash. Change it only if the drawer count is different.</p><div className="form"><Field label="Opening Cash Float"><input className="input" type="number" value={openingCash} onChange={(e) => setOpeningCash(Number(e.target.value))} /></Field><Field label="Actual Cash Count" hint="Auto-filled. Edit only for shortage or overage."><input className="input" type="number" value={manualActualCash === '' ? expectedCash.toFixed(2) : manualActualCash} onChange={(e) => setManualActualCash(e.target.value)} step="0.01" /></Field></div><div className="actions"><button className="btn secondary" onClick={() => setManualActualCash('')}>Use Expected Cash</button></div><div className="summary"><div><span>Opening Cash</span><span>{php(openingCash)}</span></div><div><span>Cash Sales</span><span>{php(cashSales)}</span></div><div className="total"><span>Expected Cash</span><span>{php(expectedCash)}</span></div><div><span>Actual Cash</span><span>{php(actualCash)}</span></div><div><span>Difference</span><span>{php(diff)}</span></div></div><span className={`badge ${closingStatus === 'Balanced' ? 'ok' : 'warn'}`}>{closingStatus}</span><div className="actions"><button className="btn" onClick={saveDailyClosing} disabled={!sessionId}>Save Daily Closing</button></div>{closingResult && <div className="row"><b>Saved Closing: {closingResult.status}</b><span>Actual {php(closingResult.actualCash)} · Difference {php(closingResult.cashDifference)}</span></div>}</div><div className="card section"><h2>Daily Report</h2><p>Total: <b>{php(sales.total)}</b></p><p>Tax: <b>{php(sales.tax)}</b></p><p>Net Profit: <b>{php(netProfit)}</b></p><h3>Expense Input</h3><div className="form"><Field label="Expense Name"><input className="input" value={expenseName} onChange={(e) => setExpenseName(e.target.value)} placeholder="Expense" /></Field><Field label="Category"><select value={expenseCategory} onChange={(e) => setExpenseCategory(e.target.value)}>{expenseCategories.map((c) => <option key={c}>{c}</option>)}</select></Field><Field label="Amount"><input className="input" type="number" value={expenseAmount} onChange={(e) => setExpenseAmount(Number(e.target.value))} placeholder="Amount" step="0.01" /></Field></div><button className="btn" onClick={addExpense}>Add Expense</button>{expenses.map((e) => <div className="row" key={e.id}><b>{e.name}</b><span>{php(e.amount)}</span></div>)}<h3 style={{marginTop:22}}>Daily Sales Records</h3>{salesRows.length === 0 && <p className="muted">No sales recorded in this app session yet. Permanent records are still saved in Google Sheets after every completed sale.</p>}{salesRows.map((sale) => <div className="row" key={sale.id}><div><b>{sale.id}</b><p className="muted">{sale.time || 'Today'} · {sale.paymentMethod} · Items: {sale.items.map((item) => `${item.name} x${item.quantity}`).join(', ')}</p><p className="muted">Tax {php(sale.tax)} · Profit {php(sale.grossProfit)} · Cash {php(sale.cashReceived || 0)} · Change {php(sale.changeDue || 0)}</p></div><b>{php(sale.total)}</b></div>)}</div></div>}
+    {tab === 'Returns' && <div className="two"><div className="card section"><h2>Returns / Replacements</h2><p className="muted">Record wrong item, defective item, damaged item, exchange, refund, or store credit. Original sales stay locked.</p><div className="form"><Field label="Original Sale / Receipt ID"><input className="input" value={returnForm.originalSaleId} onChange={(e) => setReturnField('originalSaleId', e.target.value)} placeholder="SALE-..." /></Field><Field label="Customer Name"><input className="input" value={returnForm.customerName} onChange={(e) => setReturnField('customerName', e.target.value)} placeholder="Optional" /></Field><Field label="Reason"><select value={returnForm.reason} onChange={(e) => setReturnField('reason', e.target.value)}>{returnReasons.map((x) => <option key={x}>{x}</option>)}</select></Field><Field label="Action"><select value={returnForm.action} onChange={(e) => setReturnField('action', e.target.value)}>{returnActions.map((x) => <option key={x}>{x}</option>)}</select></Field><Field label="Returned Product"><select value={returnForm.returnedProductId} onChange={(e) => setReturnField('returnedProductId', e.target.value)}>{products.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}</select></Field><Field label="Returned Qty"><input className="input" type="number" value={returnForm.returnedQty} onChange={(e) => setReturnField('returnedQty', e.target.value)} /></Field><Field label="Returned Condition"><select value={returnForm.returnedCondition} onChange={(e) => setReturnField('returnedCondition', e.target.value)}>{returnConditions.map((x) => <option key={x}>{x}</option>)}</select></Field><Field label="Restock Action"><select value={returnForm.restockAction} onChange={(e) => setReturnField('restockAction', e.target.value)}>{restockActions.map((x) => <option key={x}>{x}</option>)}</select></Field>{returnForm.action !== 'Refund' && returnForm.action !== 'Store Credit' && <><Field label="Replacement Product"><select value={returnForm.replacementProductId} onChange={(e) => setReturnField('replacementProductId', e.target.value)}>{products.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}</select></Field><Field label="Replacement Qty"><input className="input" type="number" value={returnForm.replacementQty} onChange={(e) => setReturnField('replacementQty', e.target.value)} /></Field></>}{returnForm.action === 'Refund' && <><Field label="Refund Method"><select value={returnForm.refundMethod} onChange={(e) => setReturnField('refundMethod', e.target.value)}>{paymentMethods.map((x) => <option key={x}>{x}</option>)}</select></Field><Field label="Refund Amount"><input className="input" type="number" step="0.01" value={returnForm.refundAmount || suggestedRefund} onChange={(e) => setReturnField('refundAmount', e.target.value)} /></Field></>}{returnForm.action === 'Store Credit' && <Field label="Store Credit Amount"><input className="input" type="number" step="0.01" value={returnForm.storeCreditAmount || suggestedRefund} onChange={(e) => setReturnField('storeCreditAmount', e.target.value)} /></Field>}<Field label="Notes"><input className="input" value={returnForm.notes} onChange={(e) => setReturnField('notes', e.target.value)} placeholder="Optional notes" /></Field></div><div className="summary"><div><span>Returned Value</span><span>{php(num(returnForm.returnedQty) * num(returnedProduct?.price))}</span></div><div><span>Replacement Value</span><span>{php((returnForm.action === 'Refund' || returnForm.action === 'Store Credit') ? 0 : num(returnForm.replacementQty) * num(replacementProduct?.price))}</span></div><div className="total"><span>Price Difference</span><span>{php((returnForm.action === 'Refund' || returnForm.action === 'Store Credit') ? -suggestedRefund : returnSubtotal)}</span></div></div><button className="btn" onClick={recordReturn}>Save Return / Replacement</button></div><div className="card section"><h2>Return Records</h2>{returnRows.length === 0 && <p className="muted">No return records in this app session yet.</p>}{returnRows.map((r) => <div className="row" key={r.returnId}><div><b>{r.returnId}</b><p className="muted">Sale {r.originalSaleId} · {r.reason} · {r.action}</p><p className="muted">Returned: {r.returnedProductName} x{r.returnedQty} · Replacement: {r.replacementProductName || '-'} x{r.replacementQty}</p></div><b>{php(r.priceDifference || 0)}</b></div>)}</div></div>}
     {tab === 'Weekly Report' && <div className="two"><div className="card section"><h2>Weekly Sales Summary</h2><p>Transactions: <b>{sales.count}</b></p><p>Sales Before Tax: <b>{php(sales.beforeTax)}</b></p><p>Tax: <b>{php(sales.tax)}</b></p><p>Net Profit: <b>{php(netProfit)}</b></p></div><div className="card section"><h2>Top Products</h2><p className="muted">This shows after sales are made in the current app session.</p></div></div>}
     {tab === 'Tests' && <div className="card section"><h2>Tests</h2><span className="badge ok">App loaded</span><p className="muted">Run AAA_RUN_FULL_TEST inside Apps Script for backend tests.</p></div>}
     <div className="card log"><h2>Activity Log</h2>{activity.map((a, i) => <div className="logItem" key={i}>{a}</div>)}</div>
