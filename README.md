@@ -23,7 +23,8 @@ npm run dev
 1. Upload this folder to GitHub.
 2. Import the repo in Vercel.
 3. Add env var: `VITE_API_BASE_URL=https://script.google.com/macros/s/AKfycbwkcGeYJA9TdVgdnSIdG6-0Ov0Ldjt2niuJV5_6_Wmma50hmhJzHvSFRZbHko--PWUh/exec`
-4. Deploy.
+4. Add env var: `VITE_OWNER_PIN=<your owner PIN>`
+5. Deploy.
 
 ## Live test
 1. Refresh Products.
@@ -32,3 +33,6 @@ npm run dev
 4. Enter Cash Received = 500.
 5. Complete Sale.
 6. Check Google Sheets: Sales, Sale_Items, Payments, Inventory_Movements, Products stock.
+
+## Redeploy note
+Fresh redeploy trigger: products should load all 20 default inventory items, including decimal kg support for nails.
